@@ -1,8 +1,12 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, createEventDispatcher } from 'svelte';
 	import maplibregl from 'maplibre-gl';
 	import { deserialize } from 'flatgeobuf/lib/mjs/geojson.js';
 	import 'maplibre-gl/dist/maplibre-gl.css';
+
+	const dispatch = createEventDispatcher();
+
+	export let showInitially = true;
 
 	let mapContainer: HTMLDivElement;
 	let map: maplibregl.Map;
@@ -20,8 +24,14 @@
 	let showMenu = false;
 	let showLocationSearch = false;
 	let searchQuery = '';
+	let selectedStation = ''; // 選択された駅
 	let selectedPeriod = 0; // 0: 全期間, 1: 1ヶ月, 2: 3ヶ月, 3: 6ヶ月, 4: 1年
 	let selectedCategories: string[] = []; // 選択されたカテゴリのリスト
+	let totalPOICount = 0; // 実際のPOI総数（リアクティブ変数）
+	let currentVisiblePOIs = 0; // 現在表示されているPOI数（フィルター適用後）
+	let siteInfo: any = null; // サイト情報（外部JSONから読み込み）
+	let currentPopupFeatures: any[] = []; // 現在のポップアップに表示するPOI一覧
+	let currentPopupIndex = 0; // カルーセルの現在のインデックス
 
 	// 初期設定（旧バージョンから引用）
 	const INITIAL_COORDS: [number, number] = [139.95, 35.89];
@@ -42,6 +52,28 @@
 		{ value: 2, label: '3ヶ月以内', days: 90 },
 		{ value: 3, label: '6ヶ月以内', days: 180 },
 		{ value: 4, label: '1年以内', days: 365 }
+	];
+
+	// 駅の選択肢
+	const stationOptions = [
+		{ 
+			id: '', 
+			name: '駅を選択してください', 
+			lat: null, 
+			lng: null 
+		},
+		{ 
+			id: 'kashiwa', 
+			name: '柏駅', 
+			lat: 35.86212, 
+			lng: 139.97091 
+		},
+		{ 
+			id: 'nagareyama-otakanomori', 
+			name: '流山おおたかの森駅', 
+			lat: 35.87183, 
+			lng: 139.92502 
+		}
 	];
 
 	// カテゴリフィルターの選択肢（キーワードベース）
@@ -73,6 +105,24 @@
 		}
 	];
 
+	// サイト情報の読み込み
+	async function loadSiteInfo() {
+		try {
+			const response = await fetch('/data/site-info.json');
+			if (!response.ok) throw new Error('サイト情報の取得に失敗しました');
+			siteInfo = await response.json();
+		} catch (error) {
+			console.error('サイト情報の読み込みに失敗しました:', error);
+			// フォールバック用のデフォルト値
+			siteInfo = {
+				lastDataUpdate: "2025年12月15日",
+				dataCount: 2568,
+				announcements: [],
+				githubUrl: "https://github.com/sanskruthiya/chiblo-map"
+			};
+		}
+	}
+
 	// FlatGeoBufデータの読み込み
 	async function loadPOIData() {
 		try {
@@ -92,23 +142,57 @@
 			}
 
 			let meta: any;
-			const iter = deserialize(response.body, undefined, (m: any) => (meta = m));
+			let totalFeatures = 0;
+			const iter = deserialize(response.body, undefined, (m: any) => {
+				meta = m;
+				totalFeatures = m?.featuresCount || 0;
+				
+				// メタデータ取得後に総件数を通知
+				if (totalFeatures > 0) {
+					dispatch('loadingProgress', {
+						loadedCount: 0,
+						totalCount: totalFeatures
+					});
+				}
+			});
 			
 			for await (const feature of iter) {
 				poiData.features.push(feature);
-				loadingProgress = Math.floor((poiData.features.length / meta.featuresCount) * 100);
 				
-				// 進捗更新（512件ごとまたは完了時）
-				if (poiData.features.length === meta.featuresCount || poiData.features.length % 512 === 0) {
+				// 総件数が分かっている場合のみ進捗計算
+				if (totalFeatures > 0) {
+					loadingProgress = Math.floor((poiData.features.length / totalFeatures) * 100);
+					
+					// 進捗を親コンポーネントに通知
+					dispatch('loadingProgress', {
+						loadedCount: poiData.features.length,
+						totalCount: totalFeatures
+					});
+				}
+				
+				// 進捗更新（256件ごとまたは完了時）
+				if ((totalFeatures > 0 && poiData.features.length === totalFeatures) || poiData.features.length % 256 === 0) {
 					updateMapData();
 				}
 			}
 			
 			isDataLoaded = true;
+			currentVisiblePOIs = poiData.features.length; // 初期状態では全POIが表示
 			console.log(`Loaded ${poiData.features.length} POI features`);
 			
 		} catch (error) {
 			console.error('POIデータの読み込みに失敗しました:', error);
+			
+			// エラー時もローディング完了として扱い、空のデータでマップを表示
+			isDataLoaded = true;
+			
+			// エラー情報を親コンポーネントに通知
+			const errorMessage = error instanceof Error ? error.message : 'データの読み込みに失敗しました';
+			dispatch('loadingProgress', {
+				loadedCount: 0,
+				totalCount: 0,
+				error: errorMessage
+			});
 		}
 	}
 
@@ -122,23 +206,24 @@
 		}
 	}
 
-	// 複数POI対応のポップアップHTML作成（旧バージョン準拠）
+	// カルーセル型ポップアップHTML作成
 	function createMultiPOIPopupHTML(features: any[]): string {
+		// 状態を更新
+		currentPopupFeatures = features;
+		currentPopupIndex = 0;
+
 		// リンクタイプの取得
 		const getLinkType = (flag: string) => {
 			const types: { [key: string]: string } = {
 				'1': '公式サイト',
-				'2': '公式Instagram', 
-				'3': '公式Twitter'
+				'2': 'Instagram', 
+				'3': 'Twitter'
 			};
 			return types[flag] || 'リンク';
 		};
 
-		let popupContent = '';
-		popupContent += '<table class="tablestyle02">';
-		popupContent += '<tr><th class="main">ブログ記事 <small style="font-weight: normal; font-size: 11px; color: #fff;">（🔗場所名をクリックで追加リンク表示）</small></th></tr>';
-		
-		features.forEach(function (feat) {
+		// 単一カード生成関数
+		const createSingleCard = (feat: any) => {
 			const properties = feat.properties;
 			const geometry = feat.geometry;
 			const coordinates = geometry?.coordinates || [0, 0];
@@ -151,31 +236,139 @@
 			const urlFlag = properties.url_flag || '0';
 			const urlLink = properties.url_link || '';
 
-			// ブログ記事リンク
-			const blogContent = linkSource ? 
-				`<a href="${linkSource}" target="_blank" rel="noopener">${blogSource}${dateText ? `（${dateText}）` : ''}<br>${titleSource}</a>` : 
-				`${blogSource}${dateText ? `（${dateText}）` : ''}<br>${titleSource}`;
+			let cardContent = `
+				<div class="poi-card">
+					<div class="poi-header">
+						<div class="poi-icon">📍</div>
+						<h3 class="poi-name">${name}</h3>
+					</div>
+					
+					<div class="poi-links">`;
 
-			// 公式リンクの作成
-			const officialLink = urlFlag !== '0' && urlLink ? 
-				`<a href="${urlLink}" target="_blank" rel="noopener">🏠 ${getLinkType(urlFlag)}</a> ／ ` : '';
-			
+			// 公式リンク
+			if (urlFlag !== '0' && urlLink) {
+				cardContent += `
+					<a href="${urlLink}" target="_blank" rel="noopener" class="poi-link official-link">
+						<span class="link-icon">🏠</span>
+						<span class="link-text">${getLinkType(urlFlag)}</span>
+					</a>`;
+			}
+
 			// Google Mapリンク
-			const googleMapLink = `<a href="https://www.google.com/maps/search/?api=1&query=${coordinates[1].toFixed(5)},${coordinates[0].toFixed(5)}&zoom=18" target="_blank" rel="noopener">🗺️ Google Map</a>`;
+			cardContent += `
+				<a href="https://www.google.com/maps/search/?api=1&query=${coordinates[1].toFixed(5)},${coordinates[0].toFixed(5)}&zoom=18" target="_blank" rel="noopener" class="poi-link map-link">
+					<span class="link-icon">🗺️</span>
+					<span class="link-text">Google Map</span>
+				</a>
+			</div>
 			
-			const linkOfficial = officialLink + googleMapLink + '<hr style="margin: 8px 0; border: none; border-top: 1px dotted #ccc;">';
+			<div class="blog-section">
+				<div class="blog-meta">
+					<span class="blog-icon">📝</span>
+					<span class="blog-date">${dateText}</span>
+					<span class="blog-source">${blogSource}</span>
+				</div>
+				<div class="blog-title">${linkSource ? `<a href="${linkSource}" target="_blank" rel="noopener" class="blog-title-link">${titleSource}</a>` : titleSource}</div>`;
 
-			popupContent += `<tr><td class="main">
-				<details>
-					<summary>${name}</summary>
-					${linkOfficial}
-				</details>
-				${blogContent}
-			</td></tr>`;
+			cardContent += `
+				</div>
+			</div>`;
+			
+			return cardContent;
+		};
+
+		// カルーセルコンテナの作成
+		let popupContent = '<div class="carousel-popup-container">';
+		
+		// ヘッダー（カウンターとナビゲーション）
+		if (features.length > 1) {
+			popupContent += `
+				<div class="carousel-header">
+					<button class="carousel-nav carousel-prev" onclick="window.navigatePopup(-1)" ${features.length <= 1 ? 'disabled' : ''}>
+						<span>←</span>
+					</button>
+					<div class="carousel-counter">
+						<span class="current-index">1</span>/<span class="total-count">${features.length}</span>
+					</div>
+					<button class="carousel-nav carousel-next" onclick="window.navigatePopup(1)" ${features.length <= 1 ? 'disabled' : ''}>
+						<span>→</span>
+					</button>
+				</div>`;
+		}
+
+		// カルーセルコンテンツ
+		popupContent += '<div class="carousel-content">';
+		features.forEach((feat, index) => {
+			popupContent += `<div class="carousel-slide ${index === 0 ? 'active' : ''}" data-index="${index}">`;
+			popupContent += createSingleCard(feat);
+			popupContent += '</div>';
+		});
+		popupContent += '</div>';
+		
+		popupContent += '</div>';
+		return popupContent;
+	}
+
+	// カルーセルナビゲーション関数
+	function navigatePopup(direction: number) {
+		if (currentPopupFeatures.length <= 1) return;
+		
+		const newIndex = currentPopupIndex + direction;
+		if (newIndex < 0 || newIndex >= currentPopupFeatures.length) return;
+		
+		currentPopupIndex = newIndex;
+		
+		// DOM更新
+		const slides = document.querySelectorAll('.carousel-slide');
+		const counter = document.querySelector('.current-index');
+		const prevBtn = document.querySelector('.carousel-prev') as HTMLButtonElement;
+		const nextBtn = document.querySelector('.carousel-next') as HTMLButtonElement;
+		
+		slides.forEach((slide, index) => {
+			slide.classList.toggle('active', index === currentPopupIndex);
 		});
 		
-		popupContent += '</table>';
-		return popupContent;
+		if (counter) {
+			counter.textContent = (currentPopupIndex + 1).toString();
+		}
+		
+		// ボタンの有効/無効状態
+		if (prevBtn) prevBtn.disabled = currentPopupIndex === 0;
+		if (nextBtn) nextBtn.disabled = currentPopupIndex === currentPopupFeatures.length - 1;
+	}
+
+	// キーボードイベントの追加
+	function addPopupKeyboardEvents() {
+		const handleKeydown = (e: KeyboardEvent) => {
+			if (!popup || currentPopupFeatures.length <= 1) return;
+			
+			switch (e.key) {
+				case 'ArrowLeft':
+				case 'ArrowUp':
+					e.preventDefault();
+					navigatePopup(-1);
+					break;
+				case 'ArrowRight':
+				case 'ArrowDown':
+					e.preventDefault();
+					navigatePopup(1);
+					break;
+				case 'Escape':
+					e.preventDefault();
+					if (popup) popup.remove();
+					break;
+			}
+		};
+
+		// イベントリスナーを追加
+		document.addEventListener('keydown', handleKeydown);
+
+		// ポップアップが閉じられた時にイベントリスナーを削除
+		if (popup) {
+			popup.on('close', () => {
+				document.removeEventListener('keydown', handleKeydown);
+			});
+		}
 	}
 
 	// マップ中央付近のPOIを取得する関数（旧バージョン準拠）
@@ -194,8 +387,10 @@
 			layers: ['poi-points'] 
 		});
 		
-		centerPOIs = features.slice(0, 50); // 最大50件に制限
+		totalPOICount = features.length; // 実際の総数を保存
+		centerPOIs = features.slice(0, 99); // 最大99件に制限
 	}
+
 
 	// POIリスト表示の切り替え
 	function togglePOIList() {
@@ -364,6 +559,9 @@
 			map.setFilter('poi-heat', noResultFilter);
 			map.setFilter('poi-text', noResultFilter);
 		}
+		
+		// 現在表示されているPOI数を更新
+		currentVisiblePOIs = matchingFeatures.length;
 	}
 
 	// 検索ワードフィルターの適用
@@ -426,7 +624,16 @@
 		selectedCategory = '';
 		selectedPeriod = 0;
 		selectedCategories = [];
-		applyFilter();
+		
+		// 全てのフィルターをクリア
+		if (map && isDataLoaded) {
+			map.setFilter('poi-points', null);
+			map.setFilter('poi-heat', null);
+			map.setFilter('poi-text', null);
+			
+			// 現在表示されているPOI数を全件に戻す
+			currentVisiblePOIs = poiData.features.length;
+		}
 	}
 
 	// ハンバーガーメニューの切り替え
@@ -437,6 +644,26 @@
 	// 場所検索モーダルの切り替え
 	function toggleLocationSearch() {
 		showLocationSearch = !showLocationSearch;
+	}
+
+	// 駅を選択して移動する関数
+	function selectStation() {
+		if (!selectedStation) {
+			return;
+		}
+
+		const station = stationOptions.find(s => s.id === selectedStation);
+		if (station && station.lat && station.lng) {
+			map.flyTo({
+				center: [station.lng, station.lat],
+				zoom: 15,
+				duration: 2000
+			});
+			
+			// 選択成功後にモーダルを閉じる
+			showLocationSearch = false;
+			selectedStation = '';
+		}
 	}
 
 	// 場所を検索する関数
@@ -493,6 +720,12 @@
 	}
 
 	onMount(() => {
+		// サイト情報を読み込み
+		loadSiteInfo();
+
+		// グローバル関数として登録
+		(window as any).navigatePopup = navigatePopup;
+
 		// MapLibre GL JSマップの初期化
 		map = new maplibregl.Map({
 			container: mapContainer,
@@ -615,14 +848,21 @@
 				popup.remove();
 			}
 			
-			// クリック箇所の全てのPOI情報を取得
+			// クリックした位置の全てのPOIを取得
 			const features = map.queryRenderedFeatures(e.point, { layers: ['poi-points'] });
 			
 			if (features.length > 0) {
+				// マップの中央をクリックした位置に移動
+				map.easeTo({
+					center: e.lngLat,
+					duration: 800,
+					easing: (t) => t * (2 - t) // easeOutQuad
+				});
+
 				// 新しいポップアップを作成
 				popup = new maplibregl.Popup({
 					closeButton: true,
-					closeOnClick: false,
+					closeOnClick: true,
 					anchor: 'bottom',
 					maxWidth: '360px',
 					className: 'scrollable-popup'
@@ -630,6 +870,11 @@
 				.setLngLat(e.lngLat)
 				.setHTML(createMultiPOIPopupHTML(features))
 				.addTo(map);
+
+				// ポップアップが開いた後にキーボードイベントを追加
+				setTimeout(() => {
+					addPopupKeyboardEvents();
+				}, 100);
 			}
 		});
 
@@ -668,8 +913,8 @@
 	<!-- マップコンテナ -->
 	<div bind:this={mapContainer} class="h-full w-full"></div>
 	
-	<!-- ローディング表示 -->
-	{#if !isDataLoaded}
+	<!-- ローディング表示（showInitiallyがfalseの場合は非表示） -->
+	{#if !isDataLoaded && showInitially}
 		<div class="absolute inset-0 flex items-center justify-center bg-white bg-opacity-90 z-10">
 			<div class="text-center">
 				<div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
@@ -753,7 +998,10 @@
 	{#if showPOIList}
 		<div class="poi-list-overlay" class:large-screen={isListExpanded}>
 			<div class="poi-list-header">
-				<h3 class="poi-list-title">記事一覧</h3>
+				<div class="poi-list-title-section">
+					<h3 class="poi-list-title">マップ中央付近の記事一覧</h3>
+					<span class="poi-count-badge">{totalPOICount > 99 ? '99+' : totalPOICount}</span>
+				</div>
 				<div class="poi-list-controls">
 					<button 
 						class="expand-button"
@@ -781,25 +1029,25 @@
 				</div>
 			</div>
 			
-			<p class="poi-count">マップ中央付近の記事数：{centerPOIs.length}</p>
-			
-			{#if centerPOIs.length > 0}
-				{#each centerPOIs as poi}
-					<a 
-						href={poi.properties.link_source} 
-						target="_blank" 
-						rel="noopener"
-						class="poi-item"
-					>
-						<strong>{poi.properties.name_poi}</strong> 
-						({poi.properties.blog_source} {poi.properties.date_text}) 
-						{poi.properties.title_source}
-					</a>
-					<hr class="poi-divider">
-				{/each}
-			{:else}
-				<p class="poi-count">マップ中央付近に記事がありません。</p>
-			{/if}
+			<div class="poi-list-content">
+				{#if centerPOIs.length > 0}
+					{#each centerPOIs as poi}
+						<a 
+							href={poi.properties.link_source} 
+							target="_blank" 
+							rel="noopener"
+							class="poi-item"
+						>
+							<strong>{poi.properties.name_poi}</strong> 
+							({poi.properties.blog_source} {poi.properties.date_text}) 
+							{poi.properties.title_source}
+						</a>
+						<hr class="poi-divider">
+					{/each}
+				{:else}
+					<p class="poi-count">マップ中央付近に記事がありません。</p>
+				{/if}
+			</div>
 		</div>
 	{:else}
 		<!-- POIリストが非表示の時の再表示ボタン -->
@@ -814,16 +1062,19 @@
 				<line x1="8" y1="2" x2="8" y2="6"></line>
 				<line x1="3" y1="10" x2="21" y2="10"></line>
 			</svg>
-			記事一覧
 		</button>
 	{/if}
 
 	<!-- 説明オーバーレイ -->
 	{#if showDescription}
+		<div class="modal-backdrop" role="button" tabindex="0" on:click={toggleDescription} on:keydown={(e) => e.key === 'Escape' && toggleDescription()}></div>
 		<div class="description-overlay">
 			<div class="description-content">
 				<div class="description-header">
-					<h2>ちーぶろマップ</h2>
+					<div class="title-with-logo">
+						<img src="/chiblogo.webp" alt="Chiblo Map" class="modal-logo" />
+						<h2>ちーぶろマップ</h2>
+					</div>
 					<button 
 						type="button" 
 						class="close-button" 
@@ -839,12 +1090,36 @@
 				<p class="tipstyle01">東葛地域とつくばエクスプレス沿線を中心に、柏市・流山市・松戸市・野田市・我孫子市・守谷市とその周辺の地域ブロガーの方々が発信しているブログ記事を、地図上の場所とリンクさせて表示するマップです。</p>
 				<p class="tipstyle01">地図上の水色の円をクリック/タップすると、その場所のお店やおすすめスポットのブログ記事が一覧で表示されます。</p>
 				<p class="tipstyle01">ご意見等は<a href="https://form.run/@party--1681740493" target="_blank">問い合わせフォーム（外部サービス）</a>からお知らせください。</p>
+				
+				{#if siteInfo}
+					<hr class="section-divider">
+					
+					<p class="info-item"><strong>記事データ更新日：</strong>{siteInfo.lastDataUpdate}</p>
+					
+					{#if siteInfo.announcements && siteInfo.announcements.length > 0}
+						<div class="announcements">
+							<p class="info-title"><strong>お知らせ</strong></p>
+							{#each siteInfo.announcements as announcement}
+								<p class="announcement-item">• {announcement.message}</p>
+							{/each}
+						</div>
+					{/if}
+					
+					<hr class="section-divider">
+					
+					<p class="github-link">
+						<a href={siteInfo.githubUrl} target="_blank" rel="noopener noreferrer">
+							View code on GitHub
+						</a>
+					</p>
+				{/if}
 			</div>
 		</div>
 	{/if}
 
 	<!-- 場所検索モーダル -->
 	{#if showLocationSearch}
+		<div class="modal-backdrop" role="button" tabindex="0" on:click={toggleLocationSearch} on:keydown={(e) => e.key === 'Escape' && toggleLocationSearch()}></div>
 		<div class="location-search-overlay">
 			<div class="location-search-content">
 				<div class="location-search-header">
@@ -904,16 +1179,37 @@
 						</button>
 					</div>
 				</div>
+
+				<!-- 駅名を選択 -->
+				<div class="location-section">
+					<h3>駅名を選択</h3>
+					<p class="section-description">主要駅を選択してマップに移動します</p>
+					<div class="station-select-container">
+						<select 
+							bind:value={selectedStation}
+							on:change={selectStation}
+							class="station-select"
+						>
+							{#each stationOptions as station}
+								<option value={station.id}>{station.name}</option>
+							{/each}
+						</select>
+					</div>
+				</div>
 			</div>
 		</div>
 	{/if}
 
 	<!-- フィルターオーバーレイ -->
 	{#if showFilter}
+		<div class="modal-backdrop" role="button" tabindex="0" on:click={toggleFilter} on:keydown={(e) => e.key === 'Escape' && toggleFilter()}></div>
 		<div class="filter-overlay">
 			<div class="filter-overlay-inner">
 				<div class="filter-header">
-					<h2>フィルター絞り込み</h2>
+					<div class="filter-title-section">
+						<h2>フィルター絞り込み</h2>
+						<p class="filter-poi-count">現在表示中：{currentVisiblePOIs}件</p>
+					</div>
 					<button 
 						type="button" 
 						class="close-button" 
@@ -939,12 +1235,6 @@
 							on:input={applyFilter}
 							class="filter-input"
 						>
-						<button type="button" class="clearbutton" on:click={clearFilter} aria-label="検索ワードをクリア">
-							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-								<line x1="18" y1="6" x2="6" y2="18"></line>
-								<line x1="6" y1="6" x2="18" y2="18"></line>
-							</svg>
-						</button>
 					</div>
 				</div>
 
@@ -969,7 +1259,7 @@
 				<!-- カテゴリフィルター -->
 				<div class="filter-section">
 					<h3>カテゴリ</h3>
-					<p class="filter-description">店名・記事タイトルからカテゴリで絞り込み</p>
+					<p class="filter-description">店名・記事タイトルから絞り込み（複数選択可能）</p>
 					<div class="category-chips">
 						{#each categoryOptions as category}
 							<button 
@@ -982,6 +1272,23 @@
 							</button>
 						{/each}
 					</div>
+				</div>
+
+				<!-- リセットボタン -->
+				<div class="filter-reset-section">
+					<button 
+						type="button" 
+						class="filter-reset-button"
+						on:click={clearFilter}
+					>
+						<svg class="reset-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path>
+							<path d="M21 3v5h-5"></path>
+							<path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path>
+							<path d="M3 21v-5h5"></path>
+						</svg>
+						全ての条件をリセット
+					</button>
 				</div>
 			</div>
 		</div>
@@ -997,10 +1304,10 @@
 	/* 旧バージョン準拠のポップアップスタイル */
 	:global(.scrollable-popup .maplibregl-popup-content) {
 		background: #fff;
-		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-		padding: 8px 10px;
+		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+		padding: 4px 5px;
 		overflow-y: scroll !important;
-		max-height: 210px;
+		max-height: 240px;
 		z-index: 2;
 	}
 
@@ -1074,19 +1381,20 @@
 	/* POIリスト表示のスタイル（旧バージョン準拠） */
 	.poi-list-overlay {
 		position: absolute;
-		overflow-y: scroll;
-		max-height: 15%;
-		width: 80%;
-		max-width: 600px;
+		overflow: hidden;
+		max-height: 25%;
+		width: calc(100% - 20px);
+		max-width: 1000px;
 		bottom: 40px;
-		left: 5px;
-		padding: 8px 20px;
+		left: 10px;
+		right: 10px;
 		background: rgba(250, 250, 250, 0.9);
 		box-shadow: 0 0 15px rgba(0, 0, 0, 0.2);
 		border-radius: 3px;
 		border: 1px solid #999;
-		line-height: 18px;
 		font-family: Helvetica, "游ゴシック体", YuGothic, "YuGothic M", sans-serif;
+		display: flex;
+		flex-direction: column;
 	}
 
 	.poi-list-overlay.large-screen {
@@ -1128,10 +1436,17 @@
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
-		padding: 10px 15px;
+		padding: 10px 20px;
 		background: rgba(255, 255, 255, 0.95);
 		border-bottom: 1px solid rgba(0, 0, 0, 0.1);
-		margin: -10px -10px 10px -10px;
+		flex-shrink: 0;
+		border-radius: 3px 3px 0 0;
+	}
+
+	.poi-list-title-section {
+		display: flex;
+		align-items: center;
+		gap: 8px;
 	}
 
 	.poi-list-title {
@@ -1141,9 +1456,32 @@
 		margin: 0;
 	}
 
+	.poi-count-badge {
+		background-color: #52c2d0;
+		color: white;
+		font-size: 12px;
+		font-weight: 600;
+		padding: 3px 7px;
+		border-radius: 50%;
+		min-width: 22px;
+		height: 22px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		line-height: 1;
+	}
+
 	.poi-list-controls {
 		display: flex;
 		gap: 8px;
+	}
+
+	/* POIリストコンテンツのスタイル */
+	.poi-list-content {
+		flex: 1;
+		overflow-y: auto;
+		padding: 8px 20px;
+		line-height: 18px;
 	}
 
 	.expand-button,
@@ -1175,21 +1513,22 @@
 	/* POIリスト再表示ボタンのスタイル */
 	.show-list-button {
 		position: fixed;
-		bottom: 20px;
+		bottom: 60px;
 		left: 20px;
-		background: rgba(255, 255, 255, 0.95);
-		border: 1px solid #52c2d0;
+		background: rgba(255, 255, 255, 0.9);
+		border: 1px solid rgba(0, 0, 0, 0.5);
 		border-radius: 8px;
-		padding: 10px 15px;
-		font-size: 13px;
-		font-family: inherit;
+		padding: 12px;
+		width: 56px;
+		height: 56px;
 		color: #52c2d0;
 		cursor: pointer;
 		display: flex;
 		align-items: center;
-		gap: 8px;
+		justify-content: center;
 		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 		transition: all 0.2s ease;
+		backdrop-filter: blur(10px);
 		z-index: 20;
 	}
 
@@ -1201,8 +1540,8 @@
 	}
 
 	.show-list-button svg {
-		width: 16px;
-		height: 16px;
+		width: 20px;
+		height: 20px;
 	}
 
 	/* 画面中央の十字アイコンのスタイル（旧バージョン準拠） */
@@ -1225,7 +1564,7 @@
 
 	.hamburger-button {
 		background-color: rgba(255, 255, 255, 0.95);
-		border: none;
+		border: 1px solid rgba(0, 0, 0, 0.5);
 		border-radius: 8px;
 		padding: 12px;
 		cursor: pointer;
@@ -1253,7 +1592,7 @@
 		display: block;
 		height: 2px;
 		width: 100%;
-		background-color: #333;
+		background-color: #52c2d0;
 		border-radius: 1px;
 		transition: all 0.3s ease;
 		transform-origin: center;
@@ -1280,7 +1619,7 @@
 		border-radius: 8px;
 		box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
 		backdrop-filter: blur(10px);
-		min-width: 200px;
+		min-width: 260px;
 		overflow: hidden;
 		animation: slideDown 0.2s ease;
 	}
@@ -1296,28 +1635,67 @@
 		}
 	}
 
+	@keyframes modalFadeIn {
+		from {
+			opacity: 0;
+			transform: translate(-50%, -50%) scale(0.9);
+		}
+		to {
+			opacity: 1;
+			transform: translate(-50%, -50%) scale(1);
+		}
+	}
+
+	/* モーダル背景オーバーレイ */
+	.modal-backdrop {
+		position: fixed;
+		top: 0;
+		left: 0;
+		width: 100%;
+		height: 100%;
+		background-color: rgba(0, 0, 0, 0.5);
+		z-index: 25;
+		animation: backdropFadeIn 0.3s ease;
+		cursor: pointer;
+	}
+
+	@keyframes backdropFadeIn {
+		from {
+			opacity: 0;
+		}
+		to {
+			opacity: 1;
+		}
+	}
+
 	.menu-item {
 		width: 100%;
 		background: none;
 		border: none;
-		padding: 12px 16px;
+		padding: 14px 18px;
 		text-align: left;
 		cursor: pointer;
 		display: flex;
 		align-items: center;
-		gap: 12px;
-		font-size: 14px;
-		font-family: Helvetica, "游ゴシック体", YuGothic, "YuGothic M", sans-serif;
-		color: #333;
-		transition: background-color 0.2s ease;
+		gap: 14px;
+		font-size: 16px;
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", "Hiragino Kaku Gothic ProN", "游ゴシック体", YuGothic, sans-serif;
+		font-weight: 500;
+		color: #2c3e50;
+		letter-spacing: 0.3px;
+		transition: all 0.3s ease;
 	}
 
 	.menu-item:hover {
 		background-color: rgba(52, 194, 208, 0.1);
+		color: #1a252f;
+		transform: translateX(2px);
+		border-radius: 6px;
 	}
 
 	.menu-item:active {
 		background-color: rgba(52, 194, 208, 0.2);
+		transform: translateX(1px);
 	}
 
 	.menu-icon {
@@ -1329,18 +1707,22 @@
 
 	/* 説明オーバーレイのスタイル */
 	.description-overlay {
-		position: absolute;
-		top: 10px;
-		right: 10px;
-		width: 300px;
+		position: fixed;
+		top: 40%;
+		left: 50%;
+		transform: translate(-50%, -50%);
+		width: 500px;
 		max-width: 90vw;
+		max-height: 80vh;
 		background: rgba(255, 255, 255, 0.95);
 		border: 1px solid #999;
-		border-radius: 8px;
-		box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+		border-radius: 12px;
+		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 		z-index: 30;
 		font-family: Helvetica, "游ゴシック体", YuGothic, "YuGothic M", sans-serif;
 		backdrop-filter: blur(10px);
+		overflow-y: auto;
+		animation: modalFadeIn 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 	}
 
 	.description-header {
@@ -1356,12 +1738,26 @@
 		padding: 0 15px 15px 15px;
 	}
 
+	.title-with-logo {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+	}
+
+	.modal-logo {
+		width: 40px;
+		height: 40px;
+		border-radius: 8px;
+		box-shadow: 0 4px 16px rgba(82, 194, 208, 0.2);
+	}
+
 	.description-content h2 {
-		color: #111;
-		font-size: 18px;
-		font-weight: normal;
+		color: #2c3e50;
+		font-size: 24px;
+		font-weight: 600;
 		margin: 0;
-		text-align: left;
+		letter-spacing: 0.5px;
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", "Hiragino Kaku Gothic ProN", "游ゴシック体", YuGothic, sans-serif;
 	}
 
 	.close-button {
@@ -1388,11 +1784,13 @@
 	}
 
 	.tipstyle01 {
-		color: #333;
-		font-size: 12px;
-		font-weight: normal;
-		line-height: 1.4;
-		margin: 8px 0;
+		color: #2c3e50;
+		font-size: 15px;
+		font-weight: 400;
+		line-height: 1.6;
+		margin: 16px 0;
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", "Hiragino Kaku Gothic ProN", "游ゴシック体", YuGothic, sans-serif;
+		letter-spacing: 0.2px;
 	}
 
 	.tipstyle01 a {
@@ -1400,20 +1798,325 @@
 		text-decoration: underline;
 	}
 
+	.section-divider {
+		border: none;
+		border-top: 1px solid rgba(0, 0, 0, 0.1);
+		margin: 16px 0;
+	}
+
+	.info-item {
+		color: #2c3e50;
+		font-size: 14px;
+		font-weight: 500;
+		line-height: 1.5;
+		margin: 12px 0;
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", "Hiragino Kaku Gothic ProN", "游ゴシック体", YuGothic, sans-serif;
+	}
+
+	.announcements {
+		margin: 16px 0;
+	}
+
+	.info-title {
+		color: #2c3e50;
+		font-size: 14px;
+		font-weight: 600;
+		margin: 0 0 8px 0;
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", "Hiragino Kaku Gothic ProN", "游ゴシック体", YuGothic, sans-serif;
+	}
+
+	.announcement-item {
+		color: #555;
+		font-size: 13px;
+		line-height: 1.5;
+		margin: 4px 0;
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", "Hiragino Kaku Gothic ProN", "游ゴシック体", YuGothic, sans-serif;
+	}
+
+	.github-link {
+		text-align: center;
+		margin: 12px 0 8px 0;
+	}
+
+	.github-link a {
+		color: #52c2d0;
+		text-decoration: none;
+		font-size: 13px;
+		font-weight: 500;
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", "Hiragino Kaku Gothic ProN", "游ゴシック体", YuGothic, sans-serif;
+	}
+
+	.github-link a:hover {
+		text-decoration: underline;
+	}
+
+	/* カード型ポップアップのスタイル */
+	:global(.popup-container) {
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", "Hiragino Kaku Gothic ProN", "游ゴシック体", YuGothic, sans-serif;
+		max-width: 320px;
+		min-width: 280px;
+	}
+
+	:global(.poi-card) {
+		background: #fff;
+		border-radius: 12px;
+		padding: 16px;
+		margin-bottom: 0;
+		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+	}
+
+	:global(.poi-card-separator) {
+		margin-top: 12px;
+		border-top: 1px solid #e0e0e0;
+		padding-top: 16px;
+	}
+
+	:global(.poi-header) {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		margin-bottom: 8px;
+	}
+
+	:global(.poi-icon) {
+		font-size: 16px;
+		line-height: 1;
+	}
+
+	:global(.poi-name) {
+		font-size: 15px;
+		font-weight: 600;
+		color: #2c3e50;
+		margin: 0;
+		line-height: 1.2;
+	}
+
+	:global(.poi-links) {
+		display: flex;
+		gap: 6px;
+		margin-bottom: 8px;
+		flex-wrap: wrap;
+	}
+
+	:global(.poi-link) {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 6px 10px;
+		background: #f8f9fa;
+		border: 1px solid #e9ecef;
+		border-radius: 6px;
+		text-decoration: none;
+		font-size: 12px;
+		font-weight: 500;
+		color: #495057;
+		transition: all 0.2s ease;
+	}
+
+	:global(.poi-link:hover) {
+		background: #52c2d0;
+		border-color: #52c2d0;
+		color: white;
+		transform: translateY(-1px);
+	}
+
+	:global(.link-icon) {
+		font-size: 14px;
+		line-height: 1;
+	}
+
+	:global(.link-text) {
+		white-space: nowrap;
+	}
+
+	:global(.blog-section) {
+		border-top: 1px solid #f0f0f0;
+		padding-top: 8px;
+	}
+
+	:global(.blog-meta) {
+		display: flex;
+		align-items: center;
+		gap: 5px;
+		margin-bottom: 6px;
+		font-size: 11px;
+		color: #6c757d;
+	}
+
+	:global(.blog-icon) {
+		font-size: 12px;
+		line-height: 1;
+	}
+
+	:global(.blog-date) {
+		font-weight: 500;
+	}
+
+	:global(.blog-source) {
+		font-weight: 500;
+		color: #52c2d0;
+	}
+
+	:global(.blog-title) {
+		font-size: 14px;
+		font-weight: 500;
+		color: #2c3e50;
+		line-height: 1.3;
+		margin-bottom: 0;
+		min-height: 60px;
+		display: -webkit-box;
+		-webkit-line-clamp: 3;
+		line-clamp: 3;
+		-webkit-box-orient: vertical;
+		overflow: hidden;
+	}
+
+	:global(.blog-title-link) {
+		color: #2c3e50;
+		text-decoration: none;
+		transition: color 0.2s ease;
+	}
+
+	:global(.blog-title-link:hover) {
+		color: #52c2d0;
+		text-decoration: underline;
+	}
+
+	:global(.blog-link) {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		padding: 8px 12px;
+		background: #52c2d0;
+		color: white;
+		text-decoration: none;
+		border-radius: 6px;
+		font-size: 13px;
+		font-weight: 500;
+		transition: all 0.2s ease;
+	}
+
+	:global(.blog-link:hover) {
+		background: #3a9bb0;
+		transform: translateY(-1px);
+		box-shadow: 0 2px 8px rgba(82, 194, 208, 0.3);
+	}
+
+	:global(.arrow) {
+		font-size: 12px;
+		transition: transform 0.2s ease;
+	}
+
+	:global(.blog-link:hover .arrow) {
+		transform: translateX(2px);
+	}
+
+	/* カルーセル型ポップアップのスタイル */
+	:global(.carousel-popup-container) {
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", "Hiragino Kaku Gothic ProN", "游ゴシック体", YuGothic, sans-serif;
+		max-width: 340px;
+		min-width: 300px;
+		background: #fff;
+		border-radius: 10px;
+		overflow: hidden;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+	}
+
+	:global(.carousel-header) {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 8px 12px;
+		background: #f8f9fa;
+		border-bottom: 1px solid #e9ecef;
+	}
+
+	:global(.carousel-nav) {
+		width: 28px;
+		height: 26px;
+		border: none;
+		border-radius: 5px;
+		background: #52c2d0;
+		color: white;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 14px;
+		font-weight: 600;
+		transition: all 0.2s ease;
+	}
+
+	:global(.carousel-nav:hover:not(:disabled)) {
+		background: #3a9bb0;
+		transform: scale(1.05);
+	}
+
+	:global(.carousel-nav:disabled) {
+		background: #dee2e6;
+		color: #6c757d;
+		cursor: not-allowed;
+		transform: none;
+	}
+
+	:global(.carousel-counter) {
+		font-size: 13px;
+		font-weight: 600;
+		color: #495057;
+		min-width: 50px;
+		text-align: center;
+	}
+
+	:global(.current-index) {
+		color: #52c2d0;
+		font-weight: 700;
+	}
+
+	:global(.carousel-content) {
+		position: relative;
+		overflow: hidden;
+	}
+
+	:global(.carousel-slide) {
+		display: none;
+		opacity: 0;
+		transform: translateX(20px);
+		transition: all 0.3s ease;
+	}
+
+	:global(.carousel-slide.active) {
+		display: block;
+		opacity: 1;
+		transform: translateX(0);
+	}
+
+	:global(.carousel-slide .poi-card) {
+		margin: 0;
+		border-radius: 0;
+		box-shadow: none;
+		border: none;
+		padding: 12px;
+	}
+
 	/* フィルターオーバーレイのスタイル */
 	.filter-overlay {
-		position: absolute;
-		top: 10px;
-		right: 10px;
-		width: 250px;
+		position: fixed;
+		top: 40%;
+		left: 50%;
+		transform: translate(-50%, -50%);
+		width: 450px;
 		max-width: 90vw;
+		max-height: 80vh;
 		background: rgba(255, 255, 255, 0.95);
 		border: 1px solid #999;
-		border-radius: 3px;
-		padding: 15px;
-		box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+		border-radius: 12px;
+		padding: 0;
+		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 		z-index: 30;
 		font-family: Helvetica, "游ゴシック体", YuGothic, "YuGothic M", sans-serif;
+		backdrop-filter: blur(10px);
+		overflow-y: auto;
+		animation: modalFadeIn 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 	}
 
 	/* フィルターモーダルのスタイル */
@@ -1421,22 +2124,36 @@
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
-		padding: 15px 15px 10px 15px;
+		padding: 20px;
 		border-bottom: 1px solid rgba(0, 0, 0, 0.1);
-		margin-bottom: 15px;
+	}
+
+	.filter-title-section {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
 	}
 
 	.filter-header h2 {
-		color: #111;
-		font-size: 18px;
-		font-weight: normal;
+		color: #2c3e50;
+		font-size: 22px;
+		font-weight: 600;
 		margin: 0;
-		text-align: left;
+		letter-spacing: 0.3px;
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", "Hiragino Kaku Gothic ProN", "游ゴシック体", YuGothic, sans-serif;
+	}
+
+	.filter-poi-count {
+		color: #52c2d0;
+		font-size: 15px;
+		font-weight: 500;
+		margin: 0;
+		line-height: 1.2;
 	}
 
 	.filter-section {
-		margin-bottom: 20px;
-		padding-bottom: 15px;
+		margin-bottom: 16px;
+		padding: 0 20px 12px 20px;
 		border-bottom: 1px solid rgba(0, 0, 0, 0.1);
 	}
 
@@ -1446,17 +2163,19 @@
 	}
 
 	.filter-section h3 {
-		color: #333;
-		font-size: 14px;
+		color: #2c3e50;
+		font-size: 16px;
 		font-weight: 600;
-		margin: 0 0 5px 0;
+		margin: 0 0 6px 0;
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", "Hiragino Kaku Gothic ProN", "游ゴシック体", YuGothic, sans-serif;
 	}
 
 	.filter-description {
-		color: #666;
-		font-size: 12px;
+		color: #555;
+		font-size: 14px;
 		margin: 0 0 10px 0;
 		line-height: 1.4;
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", "Hiragino Kaku Gothic ProN", "游ゴシック体", YuGothic, sans-serif;
 	}
 
 	.filter-input {
@@ -1475,58 +2194,33 @@
 		box-shadow: 0 0 0 2px rgba(82, 194, 208, 0.2);
 	}
 
-	.clearbutton {
-		position: absolute;
-		right: 8px;
-		top: 50%;
-		transform: translateY(-50%);
-		background: none;
-		border: none;
-		color: #999;
-		cursor: pointer;
-		padding: 4px;
-		width: 24px;
-		height: 24px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		border-radius: 4px;
-		transition: all 0.2s ease;
-	}
-
-	.clearbutton:hover {
-		color: #333;
-		background-color: rgba(0, 0, 0, 0.1);
-	}
-
-	.clearbutton svg {
-		width: 16px;
-		height: 16px;
-	}
 
 	/* カテゴリチップのスタイル */
 	.category-chips {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 8px;
-		margin-top: 8px;
+		gap: 6px;
+		margin-top: 6px;
+		line-height: 1.2;
 	}
 
 	/* 期間チップのスタイル */
 	.period-chips {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 8px;
-		margin-top: 8px;
+		gap: 6px;
+		margin-top: 6px;
+		line-height: 1.2;
 	}
 
 	.chip {
 		background-color: rgba(255, 255, 255, 0.9);
 		border: 1px solid #ddd;
-		border-radius: 20px;
-		padding: 6px 12px;
+		border-radius: 18px;
+		padding: 5px 10px;
 		font-size: 12px;
 		font-family: inherit;
+		font-weight: 600;
 		color: #666;
 		cursor: pointer;
 		transition: all 0.2s ease;
@@ -1554,18 +2248,22 @@
 
 	/* 場所検索モーダルのスタイル */
 	.location-search-overlay {
-		position: absolute;
-		top: 10px;
-		right: 10px;
-		width: 350px;
+		position: fixed;
+		top: 40%;
+		left: 50%;
+		transform: translate(-50%, -50%);
+		width: 500px;
 		max-width: 90vw;
+		max-height: 80vh;
 		background: rgba(255, 255, 255, 0.95);
 		border: 1px solid #999;
-		border-radius: 8px;
-		box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+		border-radius: 12px;
+		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 		z-index: 30;
 		font-family: Helvetica, "游ゴシック体", YuGothic, "YuGothic M", sans-serif;
 		backdrop-filter: blur(10px);
+		overflow-y: auto;
+		animation: modalFadeIn 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 	}
 
 	.location-search-header {
@@ -1673,5 +2371,75 @@
 		flex-shrink: 0;
 		width: auto;
 		min-width: 80px;
+	}
+
+	/* 駅選択ドロップダウンのスタイル */
+	.station-select-container {
+		margin-top: 10px;
+	}
+
+	.station-select {
+		width: 100%;
+		padding: 12px 16px;
+		border: 1px solid #ccc;
+		border-radius: 6px;
+		font-size: 14px;
+		font-family: inherit;
+		background-color: white;
+		cursor: pointer;
+		transition: all 0.2s ease;
+	}
+
+	.station-select:focus {
+		outline: none;
+		border-color: #52c2d0;
+		box-shadow: 0 0 0 2px rgba(82, 194, 208, 0.2);
+	}
+
+	.station-select:hover {
+		border-color: #52c2d0;
+	}
+
+	/* フィルターリセットボタンのスタイル */
+	.filter-reset-section {
+		padding: 16px 20px;
+		border-top: 1px solid rgba(0, 0, 0, 0.1);
+		margin-top: 8px;
+	}
+
+	.filter-reset-button {
+		width: 100%;
+		background-color: #f8f9fa;
+		border: 1px solid #dee2e6;
+		border-radius: 8px;
+		padding: 12px 16px;
+		font-size: 14px;
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", "Hiragino Kaku Gothic ProN", "游ゴシック体", YuGothic, sans-serif;
+		font-weight: 500;
+		color: #6c757d;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+		transition: all 0.2s ease;
+	}
+
+	.filter-reset-button:hover {
+		background-color: #e9ecef;
+		border-color: #adb5bd;
+		color: #495057;
+		transform: translateY(-1px);
+	}
+
+	.filter-reset-button:active {
+		transform: translateY(0);
+		background-color: #dee2e6;
+	}
+
+	.reset-icon {
+		width: 16px;
+		height: 16px;
+		flex-shrink: 0;
 	}
 </style>
