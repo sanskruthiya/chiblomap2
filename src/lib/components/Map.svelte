@@ -2,6 +2,7 @@
 	import { onMount, createEventDispatcher } from 'svelte';
 	import maplibregl from 'maplibre-gl';
 	import { deserialize } from 'flatgeobuf/lib/mjs/geojson.js';
+	import { base } from '$app/paths';
 	import 'maplibre-gl/dist/maplibre-gl.css';
 
 	const dispatch = createEventDispatcher();
@@ -63,16 +64,154 @@
 			lng: null 
 		},
 		{ 
-			id: 'kashiwa', 
-			name: '柏駅', 
-			lat: 35.86212, 
-			lng: 139.97091 
+			id: 'minami-nagareyama', 
+			name: '南流山', 
+			lat: 35.8381, 
+			lng: 139.9035 
+		},
+		{ 
+			id: 'nagareyama-central-park', 
+			name: '流山セントラルパーク', 
+			lat: 35.8546, 
+			lng: 139.9152 
 		},
 		{ 
 			id: 'nagareyama-otakanomori', 
-			name: '流山おおたかの森駅', 
-			lat: 35.87183, 
-			lng: 139.92502 
+			name: '流山おおたかの森', 
+			lat: 35.8719, 
+			lng: 139.9254 
+		},
+		{ 
+			id: 'kashiwanoha-campus', 
+			name: '柏の葉キャンパス', 
+			lat: 35.8933, 
+			lng: 139.9525 
+		},
+		{ 
+			id: 'kashiwa-tanaka', 
+			name: '柏たなか', 
+			lat: 35.9109, 
+			lng: 139.9575 
+		},
+		{ 
+			id: 'moriya', 
+			name: '守谷', 
+			lat: 35.9504, 
+			lng: 139.9921 
+		},
+		{ 
+			id: 'mirai-daira', 
+			name: 'みらい平', 
+			lat: 35.9944, 
+			lng: 140.0383 
+		},
+		{ 
+			id: 'midorino', 
+			name: 'みどりの', 
+			lat: 36.0299, 
+			lng: 140.0562 
+		},
+		{ 
+			id: 'kenkyugakuen', 
+			name: '研究学園', 
+			lat: 36.0822, 
+			lng: 140.0823 
+		},
+		{ 
+			id: 'banpaku-kinen-koen', 
+			name: '万博記念公園', 
+			lat: 36.0584, 
+			lng: 140.0594 
+		},
+		{ 
+			id: 'tsukuba', 
+			name: 'つくば', 
+			lat: 36.0824, 
+			lng: 140.1105 
+		},
+		{ 
+			id: 'matsudo', 
+			name: '松戸', 
+			lat: 35.7846, 
+			lng: 139.9008 
+		},
+		{ 
+			id: 'kashiwa', 
+			name: '柏', 
+			lat: 35.8621, 
+			lng: 139.9708 
+		},
+		{ 
+			id: 'shin-matsudo', 
+			name: '新松戸', 
+			lat: 35.8254, 
+			lng: 139.9212 
+		},
+		{ 
+			id: 'minami-kashiwa', 
+			name: '南柏', 
+			lat: 35.8446, 
+			lng: 139.9542 
+		},
+		{ 
+			id: 'abiko', 
+			name: '我孫子', 
+			lat: 35.8728, 
+			lng: 140.0105 
+		},
+		{ 
+			id: 'toride', 
+			name: '取手', 
+			lat: 35.8963, 
+			lng: 140.0632 
+		},
+		{ 
+			id: 'edogawadai', 
+			name: '江戸川台', 
+			lat: 35.8972, 
+			lng: 139.9105 
+		},
+		{ 
+			id: 'hatsuishi', 
+			name: '初石', 
+			lat: 35.8838, 
+			lng: 139.9179 
+		},
+		{ 
+			id: 'unga', 
+			name: '運河', 
+			lat: 35.9144, 
+			lng: 139.906 
+		},
+		{ 
+			id: 'shimizu-koen', 
+			name: '清水公園', 
+			lat: 35.9588, 
+			lng: 139.8603 
+		},
+		{ 
+			id: 'nagareyama', 
+			name: '流山', 
+			lat: 35.8558, 
+			lng: 139.9018 
+		},
+		{ 
+			id: 'toyoshiki', 
+			name: '豊四季', 
+			lat: 35.8665, 
+			lng: 139.9393 
+		},
+		{ 
+			id: 'sakasai', 
+			name: '逆井', 
+			lat: 35.8233, 
+			lng: 139.9837 
+		},
+		{ 
+			id: 'shin-yahashira', 
+			name: '新八柱', 
+			lat: 35.7913, 
+			lng: 139.9386 
 		}
 	];
 
@@ -108,9 +247,10 @@
 	// サイト情報の読み込み
 	async function loadSiteInfo() {
 		try {
-			const response = await fetch('/data/site-info.json');
+			const response = await fetch(`${base}/data/site-info.json`);
 			if (!response.ok) throw new Error('サイト情報の取得に失敗しました');
 			siteInfo = await response.json();
+			return siteInfo;
 		} catch (error) {
 			console.error('サイト情報の読み込みに失敗しました:', error);
 			// フォールバック用のデフォルト値
@@ -120,17 +260,22 @@
 				announcements: [],
 				githubUrl: "https://github.com/sanskruthiya/chiblo-map"
 			};
+			return siteInfo;
 		}
 	}
 
 	// FlatGeoBufデータの読み込み
-	async function loadPOIData() {
+	async function loadPOIData(lastDataUpdate?: string) {
 		try {
-			const currentDate = new Date();
-			const dateParam = `${currentDate.getFullYear()}${(currentDate.getMonth() + 1).toString().padStart(2, '0')}${currentDate.getDate().toString().padStart(2, '0')}`;
-			const url = `/data/poi.fgb?${dateParam}`;
+			// lastDataUpdateをキャッシュパラメータとして使用
+			let cacheParam = 'default';
+			if (lastDataUpdate) {
+				// 日本語の日付を英数字のみのパラメータに変換
+				cacheParam = lastDataUpdate.replace(/[年月日]/g, '').replace(/\s/g, '');
+			}
+			const url = `${base}/data/poi.fgb?v=${cacheParam}`;
 			
-			console.log('Loading POI data from:', url);
+			console.log('Loading POI data from:', url, 'Cache param:', cacheParam);
 			
 			const response = await fetch(url);
 			if (!response.ok) {
@@ -720,16 +865,15 @@
 	}
 
 	onMount(() => {
-		// サイト情報を読み込み
-		loadSiteInfo();
+		// サイト情報を読み込んでからマップを初期化
+		loadSiteInfo().then((siteData) => {
+			// グローバル関数として登録
+			(window as any).navigatePopup = navigatePopup;
 
-		// グローバル関数として登録
-		(window as any).navigatePopup = navigatePopup;
-
-		// MapLibre GL JSマップの初期化
-		map = new maplibregl.Map({
+			// MapLibre GL JSマップの初期化
+			map = new maplibregl.Map({
 			container: mapContainer,
-			style: '/data/basemap_style.json',
+			style: `${base}/data/basemap_style.json`,
 			center: INITIAL_COORDS,
 			zoom: INITIAL_ZOOM,
 			bearing: INITIAL_BEARING,
@@ -830,77 +974,70 @@
 				}
 			});
 
-			// データ読み込み開始
-			loadPOIData();
-		});
+			// データ読み込み開始（サイト情報のlastDataUpdateを使用）
+			loadPOIData(siteData?.lastDataUpdate);
 
-		// データ読み込み完了時にPOIリストを初期表示
-		map.on('sourcedata', (e) => {
-			if (e.sourceId === 'poi-data' && e.isSourceLoaded && isDataLoaded) {
+			// データ読み込み完了時にPOIリストを初期表示
+			map.on('sourcedata', (e) => {
+				if (e.sourceId === 'poi-data' && e.isSourceLoaded && isDataLoaded) {
+					updateCenterPOIs();
+				}
+			});
+
+			// POIクリックイベントを追加（複数POI対応）
+			map.on('click', 'poi-points', (e) => {
+				// 既存のポップアップを削除
+				if (popup) {
+					popup.remove();
+				}
+				
+				// クリックした位置の全てのPOIを取得
+				const features = map.queryRenderedFeatures(e.point, { layers: ['poi-points'] });
+				
+				if (features.length > 0) {
+					// マップの中央をクリックした位置に移動
+					map.easeTo({ center: e.lngLat, duration: 500 });
+					
+					// ポップアップを作成して表示
+					popup = new maplibregl.Popup({
+						closeButton: true,
+						closeOnClick: true,
+						anchor: 'bottom',
+						maxWidth: '360px',
+						className: 'scrollable-popup'
+					})
+					.setLngLat(e.lngLat)
+					.setHTML(createMultiPOIPopupHTML(features))
+					.addTo(map);
+					updateCenterPOIs();
+				}
+			});
+
+			// マウスカーソルの変更
+			map.on('mouseenter', 'poi-points', () => {
+				map.getCanvas().style.cursor = 'pointer';
+			});
+
+			map.on('mouseleave', 'poi-points', () => {
+				map.getCanvas().style.cursor = '';
+			});
+
+			// ナビゲーションコントロールを追加
+			map.addControl(new maplibregl.NavigationControl(), 'top-right');
+
+			// マップ移動時にPOIリストを更新
+			map.on('moveend', () => {
+				if (showPOIList) {
+					updateCenterPOIs();
+				}
+			});
+
+			// 初期POIリスト表示
+			if (isDataLoaded) {
 				updateCenterPOIs();
 			}
 		});
-
-		// POIクリックイベントを追加（複数POI対応）
-		map.on('click', 'poi-points', (e) => {
-			// 既存のポップアップを削除
-			if (popup) {
-				popup.remove();
-			}
-			
-			// クリックした位置の全てのPOIを取得
-			const features = map.queryRenderedFeatures(e.point, { layers: ['poi-points'] });
-			
-			if (features.length > 0) {
-				// マップの中央をクリックした位置に移動
-				map.easeTo({
-					center: e.lngLat,
-					duration: 800,
-					easing: (t) => t * (2 - t) // easeOutQuad
-				});
-
-				// 新しいポップアップを作成
-				popup = new maplibregl.Popup({
-					closeButton: true,
-					closeOnClick: true,
-					anchor: 'bottom',
-					maxWidth: '360px',
-					className: 'scrollable-popup'
-				})
-				.setLngLat(e.lngLat)
-				.setHTML(createMultiPOIPopupHTML(features))
-				.addTo(map);
-
-				// ポップアップが開いた後にキーボードイベントを追加
-				setTimeout(() => {
-					addPopupKeyboardEvents();
-				}, 100);
-			}
-		});
-
-		// マウスカーソルの変更
-		map.on('mouseenter', 'poi-points', () => {
-			map.getCanvas().style.cursor = 'pointer';
-		});
-
-		map.on('mouseleave', 'poi-points', () => {
-			map.getCanvas().style.cursor = '';
-		});
-
-		// ナビゲーションコントロールを追加
-		map.addControl(new maplibregl.NavigationControl(), 'top-right');
-
-		// マップ移動時にPOIリストを更新
-		map.on('moveend', () => {
-			if (showPOIList) {
-				updateCenterPOIs();
-			}
-		});
-
-		// 初期POIリスト表示
-		if (isDataLoaded) {
-			updateCenterPOIs();
-		}
+	});
 
 		// クリーンアップ関数
 		return () => {
@@ -1072,7 +1209,7 @@
 			<div class="description-content">
 				<div class="description-header">
 					<div class="title-with-logo">
-						<img src="/chiblogo.webp" alt="Chiblo Map" class="modal-logo" />
+						<img src="{base}/chiblogo.webp" alt="Chiblo Map" class="modal-logo" />
 						<h2>ちーぶろマップ</h2>
 					</div>
 					<button 
@@ -2025,10 +2162,11 @@
 	:global(.carousel-header) {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
+		justify-content: center;
 		padding: 8px 12px;
 		background: #f8f9fa;
 		border-bottom: 1px solid #e9ecef;
+		position: relative;
 	}
 
 	:global(.carousel-nav) {
@@ -2045,6 +2183,15 @@
 		font-size: 14px;
 		font-weight: 600;
 		transition: all 0.2s ease;
+		position: absolute;
+	}
+
+	:global(.carousel-prev) {
+		left: 30px;
+	}
+
+	:global(.carousel-next) {
+		right: 30px;
 	}
 
 	:global(.carousel-nav:hover:not(:disabled)) {

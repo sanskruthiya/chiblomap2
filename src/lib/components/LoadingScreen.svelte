@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { createEventDispatcher } from 'svelte';
+	import { base } from '$app/paths';
 
 	const dispatch = createEventDispatcher();
 
@@ -15,7 +16,7 @@
 
 	onMount(async () => {
 		try {
-			const response = await fetch('/data/site-info.json');
+			const response = await fetch(`${base}/data/site-info.json`);
 			siteInfo = await response.json();
 		} catch (error) {
 			console.error('サイト情報の読み込みに失敗しました:', error);
@@ -34,7 +35,7 @@
 	<div class="loading-content">
 		<!-- 猫のロゴ -->
 		<div class="logo-container">
-			<img src="/chiblogo.webp" alt="Chiblo Map" class="logo" />
+			<img src="{base}/chiblogo.webp" alt="Chiblo Map" class="logo" />
 		</div>
 
 		<!-- タイトル -->
