@@ -239,6 +239,11 @@
 			keywords: ['レストラン', 'イタリアン', 'フレンチ'] 
 		},
 		{ 
+			id: 'izakaya', 
+			label: '居酒屋', 
+			keywords: ['居酒屋', '呑み'] 
+		},
+		{ 
 			id: 'park', 
 			label: '公園', 
 			keywords: ['公園'] 

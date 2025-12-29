@@ -10,6 +10,7 @@ Input: Environment variable or interactive input (secure)
 Output: Fixed format optimized for production
 """
 
+import asyncio
 import csv
 import getpass
 import json
@@ -20,6 +21,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+
+import aiohttp
 
 
 def load_env_file(env_path: Path = Path(".env")) -> None:
@@ -176,6 +180,199 @@ def parse_csv_data(csv_lines: List[str]) -> Tuple[List[str], List[Dict]]:
         raise ValueError(f"Failed to parse CSV data: {e}")
 
 
+def is_valid_url_format(url: str) -> bool:
+    """
+    Validate URL format without making HTTP requests.
+    
+    Args:
+        url: URL string to validate
+        
+    Returns:
+        True if URL format is valid, False otherwise
+    """
+    if not url or not url.strip():
+        return False
+    
+    try:
+        parsed = urlparse(url.strip())
+        return all([
+            parsed.scheme in ['http', 'https'],
+            parsed.netloc,
+            '.' in parsed.netloc  # Domain must contain at least one dot
+        ])
+    except Exception:
+        return False
+
+
+async def check_url_accessibility(url: str, session: aiohttp.ClientSession) -> tuple[bool, str]:
+    """
+    Check if URL is accessible via HTTP request.
+    
+    Args:
+        url: URL to check
+        session: aiohttp session for making requests
+        
+    Returns:
+        Tuple of (is_accessible, reason) where reason explains the result
+    """
+    try:
+        # Use realistic browser headers to avoid bot detection
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        }
+        
+        async with session.head(
+            url,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=20),  # Increased timeout
+            allow_redirects=True
+        ) as response:
+            # Only exclude 404 errors, treat all other status codes as valid
+            if response.status == 404:
+                return False, f"HTTP error (status: {response.status}) - Not Found"
+            else:
+                return True, f"OK (status: {response.status})"
+    except asyncio.TimeoutError:
+        # Timeout doesn't necessarily mean the URL is invalid
+        # It could be slow response or bot protection
+        log_info(f"Timeout checking URL (treating as valid): {url}")
+        return True, "Timeout (treated as valid)"
+    except aiohttp.ClientError as e:
+        # Treat all client errors as valid URLs (including 400, 500, etc.)
+        # Only 404 errors should be excluded, which are handled in the response status check above
+        log_info(f"Client error checking URL (treating as valid): {url} - {e}")
+        return True, f"Client error (treated as valid): {str(e)}"
+    except Exception as e:
+        log_info(f"Unexpected error checking URL: {url} - {e}")
+        return False, f"Unexpected error: {str(e)}"
+
+
+async def filter_accessible_urls(data_rows: List[Dict]) -> List[Dict]:
+    """
+    Filter data rows to only include those with accessible URLs.
+    
+    Args:
+        data_rows: List of data row dictionaries
+        
+    Returns:
+        List of data rows with accessible URLs
+    """
+    if not data_rows:
+        return []
+    
+    log_info(f"Starting URL accessibility check for {len(data_rows)} URLs...")
+    
+    async with aiohttp.ClientSession(
+        connector=aiohttp.TCPConnector(limit=20),  # Reduced concurrent connections
+        timeout=aiohttp.ClientTimeout(total=20)   # Increased timeout
+    ) as session:
+        tasks = []
+        for row in data_rows:
+            url = row.get('link_source', '').strip()
+            if url:
+                tasks.append(check_url_accessibility(url, session))
+            else:
+                # Create a completed task that returns False for empty URLs
+                async def empty_url_task():
+                    return False, "Empty URL"
+                tasks.append(empty_url_task())
+        
+        # Process in batches to show progress and add delays
+        batch_size = 50  # Smaller batches
+        results = []
+        
+        for i in range(0, len(tasks), batch_size):
+            batch_tasks = tasks[i:i + batch_size]
+            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+            results.extend(batch_results)
+            
+            # Log progress
+            processed = min(i + batch_size, len(tasks))
+            log_info(f"URL check progress: {processed}/{len(tasks)} ({processed/len(tasks)*100:.1f}%)")
+            
+            # Add delay between batches to be respectful to servers
+            if i + batch_size < len(tasks):
+                await asyncio.sleep(1)  # 1 second delay between batches
+    
+    # Filter rows based on results and log excluded URLs
+    accessible_rows = []
+    excluded_urls = []
+    
+    for row, result in zip(data_rows, results):
+        if isinstance(result, tuple) and len(result) == 2:
+            is_accessible, reason = result
+            if is_accessible:
+                accessible_rows.append(row)
+            else:
+                url = row.get('link_source', '').strip()
+                excluded_urls.append({
+                    'url': url,
+                    'reason': reason,
+                    'poi_name': row.get('name_poi', 'Unknown'),
+                    'title_source': row.get('title_source', 'Unknown')
+                })
+        elif isinstance(result, Exception):
+            url = row.get('link_source', '').strip()
+            excluded_urls.append({
+                'url': url,
+                'reason': f"Exception: {str(result)}",
+                'poi_name': row.get('name_poi', 'Unknown'),
+                'title_source': row.get('title_source', 'Unknown')
+            })
+    
+    # Save excluded URLs to log file
+    if excluded_urls:
+        save_excluded_urls_log(excluded_urls)
+    
+    log_info(f"URL accessibility check completed: {len(accessible_rows)}/{len(data_rows)} URLs are accessible")
+    log_info(f"Excluded {len(excluded_urls)} URLs - details saved to excluded_urls.tsv")
+    return accessible_rows
+
+
+def save_excluded_urls_log(excluded_urls: List[Dict]) -> None:
+    """
+    Save excluded URLs to a TSV file for manual review.
+    
+    Args:
+        excluded_urls: List of dictionaries containing URL exclusion details
+    """
+    from datetime import datetime
+    
+    # Create output directory if it doesn't exist
+    output_dir = Path("output")
+    output_dir.mkdir(exist_ok=True)
+    
+    # Generate log filename with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = output_dir / f"excluded_urls_{timestamp}.tsv"
+    
+    try:
+        with open(log_path, 'w', encoding='utf-8') as f:
+            # Write header
+            f.write("URL\tPOI_Name\tTitle_Source\tReason\tGenerated_Date\n")
+            
+            # Write data rows
+            generated_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            for item in excluded_urls:
+                # Escape tabs and newlines in data
+                url = item['url'].replace('\t', ' ').replace('\n', ' ')
+                poi_name = item['poi_name'].replace('\t', ' ').replace('\n', ' ')
+                title_source = item['title_source'].replace('\t', ' ').replace('\n', ' ')
+                reason = item['reason'].replace('\t', ' ').replace('\n', ' ')
+                
+                f.write(f"{url}\t{poi_name}\t{title_source}\t{reason}\t{generated_date}\n")
+        
+        log_info(f"Excluded URLs log saved: {log_path} ({len(excluded_urls)} entries)")
+        
+    except Exception as e:
+        log_error(f"Failed to save excluded URLs log: {e}")
+
+
 def validate_coordinates(lat: str, lon: str) -> Tuple[Optional[float], Optional[float]]:
     """
     Validate and convert coordinate strings to floats.
@@ -205,6 +402,41 @@ def validate_coordinates(lat: str, lon: str) -> Tuple[Optional[float], Optional[
         
     except (ValueError, AttributeError):
         return None, None
+
+
+def convert_to_geojson_with_url_validation(headers: List[str], data_rows: List[Dict]) -> Dict:
+    """
+    Convert CSV data to GeoJSON format with URL validation and filtering.
+    
+    Args:
+        headers: List of column headers
+        data_rows: List of data row dictionaries
+        
+    Returns:
+        GeoJSON dictionary with filtered and validated data
+    """
+    log_info("Starting filtered GeoJSON conversion with URL validation...")
+    
+    # Step 1: Filter expired data first (_flag_expired=0 only)
+    active_rows = [
+        row for row in data_rows 
+        if row.get('_flag_expired', '').strip() == '0'
+    ]
+    log_info(f"Active records (_flag_expired=0): {len(active_rows)} rows")
+    
+    # Step 2: URL format validation
+    format_valid_rows = [
+        row for row in active_rows 
+        if is_valid_url_format(row.get('link_source', ''))
+    ]
+    log_info(f"Valid URL format: {len(format_valid_rows)} rows")
+    
+    # Step 3: HTTP accessibility check
+    accessible_rows = asyncio.run(filter_accessible_urls(format_valid_rows))
+    log_info(f"Accessible URLs: {len(accessible_rows)} rows")
+    
+    # Step 4: Convert to GeoJSON with filtered fields
+    return convert_to_geojson(headers, accessible_rows, FILTERED_FIELDS, filter_expired=False)
 
 
 def convert_to_geojson(headers: List[str], data_rows: List[Dict], 
@@ -372,9 +604,9 @@ def main():
         geojson_full = convert_to_geojson(headers, data_rows)
         save_geojson(geojson_full, geojson_full_path)
         
-        # Step 5: Convert to filtered FlatGeobuf
-        log_info(f"Creating filtered version FlatGeobuf (fields: {len(FILTERED_FIELDS)}, _flag_expired=0 only)...")
-        geojson_filtered = convert_to_geojson(headers, data_rows, FILTERED_FIELDS, filter_expired=True)
+        # Step 5: Convert to filtered FlatGeobuf with URL validation
+        log_info(f"Creating filtered version FlatGeobuf (fields: {len(FILTERED_FIELDS)}, with URL validation)...")
+        geojson_filtered = convert_to_geojson_with_url_validation(headers, data_rows)
         
         # Save filtered as temporary GeoJSON for conversion
         temp_geojson_path = output_dir / f"temp_filtered_{timestamp}.geojson"
