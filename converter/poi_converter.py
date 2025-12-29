@@ -44,9 +44,6 @@ FILTERED_FIELDS = [
     'date_stamp',        # 日付スタンプ
     'name_poi',          # POI名
     'address_poi',       # POI住所
-    'flag_poi',          # カテゴリフラグ
-    'y',                 # 緯度
-    'x',                 # 経度
     'url_link',          # リンクURL
     'url_flag'           # URLフラグ
 ]
