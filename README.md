@@ -1,38 +1,33 @@
-# sv
+# ちーぶろマップ
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+東葛地域とつくばエクスプレス沿線を中心とした地域ブロガーの記事を地図上で表示するWebアプリケーションです。
 
-## Creating a project
+Live site: https://kashiwa.co-place.com/chiblo/
 
-If you're seeing this, you've probably already done this step. Congrats!
+## このマップについて
 
-```sh
-# create a new project in the current directory
-npx sv create
+東葛地域とつくばエクスプレス沿線を中心に、柏市・流山市・松戸市・野田市・我孫子市・守谷市とその周辺の地域ブロガーの方々が発信しているブログ記事を、地図上の場所とリンクさせて表示するマップです。
 
-# create a new project in my-app
-npx sv create my-app
-```
+地図上の水色の円をクリック/タップすると、その場所のお店やおすすめスポットのブログ記事が一覧で表示されます。
 
-## Developing
+## 技術スタック
 
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
+- **フロントエンド**: SvelteKit + TypeScript
+- **地図ライブラリ**: MapLibre GL JS
+- **スタイリング**: TailwindCSS
+- **地理データ**: FlatGeoBuf形式
+- **デプロイ**: 静的サイト生成（adapter-static）
 
-```sh
-npm run dev
+## 機能
 
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
-```
+- **インタラクティブマップ**: MapLibre GL JSによる高性能な地図表示
+- **POI検索**: マップ中央付近の記事一覧表示
+- **ジオロケーション**: 現在位置への移動機能
+- **レスポンシブデザイン**: モバイル・デスクトップ対応
+- **フィルター機能**: 期間やカテゴリによる記事絞り込み
 
-## Building
+## データについて
 
-To create a production version of your app:
-
-```sh
-npm run build
-```
-
-You can preview the production build with `npm run preview`.
-
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+- 地理データはFlatGeoBuf形式で効率的に配信
+- ブログ記事データは定期的に更新
+- 対象地域：柏市・流山市・松戸市・野田市・我孫子市・守谷市とその周辺
