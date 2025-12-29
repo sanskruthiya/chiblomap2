@@ -28,6 +28,7 @@
 	let selectedStation = ''; // 選択された駅
 	let selectedPeriod = 0; // 0: 全期間, 1: 1ヶ月, 2: 3ヶ月, 3: 6ヶ月, 4: 1年
 	let selectedCategories: string[] = []; // 選択されたカテゴリのリスト
+	let sortMode = 'name-asc'; // ソートモード: 'name-asc'(デフォルト), 'date-desc'
 	let totalPOICount = 0; // 実際のPOI総数（リアクティブ変数）
 	let currentVisiblePOIs = 0; // 現在表示されているPOI数（フィルター適用後）
 	let siteInfo: any = null; // サイト情報（外部JSONから読み込み）
@@ -516,6 +517,30 @@
 		}
 	}
 
+	// POI配列をソートする関数
+	function sortPOIs(pois: any[]): any[] {
+		if (sortMode === 'date-desc') {
+			// 日付の新しい順（date_stampの降順）
+			return [...pois].sort((a, b) => {
+				const dateA = a.properties?.date_stamp || 0;
+				const dateB = b.properties?.date_stamp || 0;
+				return dateB - dateA;
+			});
+		}
+		// デフォルト: 場所名の昇順（name_poiのあいうえお順）
+		return [...pois].sort((a, b) => {
+			const nameA = a.properties?.name_poi || '';
+			const nameB = b.properties?.name_poi || '';
+			return nameA.localeCompare(nameB, 'ja');
+		});
+	}
+
+	// ソートモードを変更する関数
+	function changeSortMode(mode: string) {
+		sortMode = mode;
+		updateCenterPOIs(); // リストを再更新
+	}
+
 	// マップ中央付近のPOIを取得する関数（旧バージョン準拠）
 	function updateCenterPOIs() {
 		if (!map || !isDataLoaded) return;
@@ -533,7 +558,8 @@
 		});
 		
 		totalPOICount = features.length; // 実際の総数を保存
-		centerPOIs = features.slice(0, 99); // 最大99件に制限
+		const limitedFeatures = features.slice(0, 99); // 最大99件に制限
+		centerPOIs = sortPOIs(limitedFeatures); // ソートを適用
 	}
 
 
@@ -1022,8 +1048,18 @@
 				map.getCanvas().style.cursor = '';
 			});
 
-			// ナビゲーションコントロールを追加
-			map.addControl(new maplibregl.NavigationControl(), 'top-right');
+			// ナビゲーションコントロールを追加（方位アイコンを非表示）
+			map.addControl(new maplibregl.NavigationControl({
+				showCompass: false
+			}), 'top-right');
+
+			// ジオロケーションコントロールを追加
+			map.addControl(new maplibregl.GeolocateControl({
+				positionOptions: {
+					enableHighAccuracy: true
+				},
+				trackUserLocation: true
+			}), 'top-right');
 
 			// マップ移動時にPOIリストを更新
 			map.on('moveend', () => {
@@ -1139,6 +1175,38 @@
 					<h3 class="poi-list-title">マップ中央付近の記事一覧</h3>
 					<span class="poi-count-badge">{totalPOICount > 99 ? '99+' : totalPOICount}</span>
 				</div>
+				
+				<!-- ソートボタン -->
+				<div class="sort-controls" style="display: none;">
+					<button 
+						class="sort-button"
+						class:active={sortMode === 'name-asc'}
+						on:click={() => changeSortMode('name-asc')}
+						aria-label="場所名順"
+						title="場所名順（あいうえお順）"
+					>
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<path d="M3 6h18M7 12h10M11 18h6"></path>
+							<path d="M7 8l3-3 3 3"></path>
+						</svg>
+					</button>
+					<button 
+						class="sort-button"
+						class:active={sortMode === 'date-desc'}
+						on:click={() => changeSortMode('date-desc')}
+						aria-label="日付の新しい順"
+						title="日付の新しい順"
+					>
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+							<line x1="16" y1="2" x2="16" y2="6"></line>
+							<line x1="8" y1="2" x2="8" y2="6"></line>
+							<line x1="3" y1="10" x2="21" y2="10"></line>
+							<path d="M12 14l-3 3 3 3"></path>
+						</svg>
+					</button>
+				</div>
+				
 				<div class="poi-list-controls">
 					<button 
 						class="expand-button"
@@ -1147,9 +1215,11 @@
 					>
 						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 							{#if isListExpanded}
-								<path d="M18 15l-6-6-6 6"></path>
-							{:else}
+								<!-- 縮小アイコン: 下矢印 -->
 								<path d="M6 9l6 6 6-6"></path>
+							{:else}
+								<!-- 拡大アイコン: 四角が大きくなる -->
+								<path d="M15 3h6v6M14 10l6.1-6.1M9 21H3v-6M10 14l-6.1 6.1"></path>
 							{/if}
 						</svg>
 					</button>
@@ -1578,6 +1648,8 @@
 		border-bottom: 1px solid rgba(0, 0, 0, 0.1);
 		flex-shrink: 0;
 		border-radius: 3px 3px 0 0;
+		gap: 12px;
+		flex-wrap: wrap;
 	}
 
 	.poi-list-title-section {
@@ -1610,7 +1682,48 @@
 
 	.poi-list-controls {
 		display: flex;
-		gap: 8px;
+		gap: 16px;
+	}
+
+	/* ソートコントロールのスタイル */
+	.sort-controls {
+		display: flex;
+		gap: 4px;
+		align-items: center;
+	}
+
+	.sort-button {
+		background: none;
+		border: 1px solid rgba(0, 0, 0, 0.2);
+		color: #666;
+		cursor: pointer;
+		padding: 6px;
+		border-radius: 6px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		transition: all 0.2s ease;
+		width: 32px;
+		height: 32px;
+	}
+
+	.sort-button:hover {
+		background-color: rgba(82, 194, 208, 0.1);
+		border-color: #52c2d0;
+		color: #52c2d0;
+		transform: translateY(-1px);
+	}
+
+	.sort-button.active {
+		background-color: #52c2d0;
+		border-color: #52c2d0;
+		color: white;
+		box-shadow: 0 2px 4px rgba(82, 194, 208, 0.3);
+	}
+
+	.sort-button svg {
+		width: 16px;
+		height: 16px;
 	}
 
 	/* POIリストコンテンツのスタイル */
