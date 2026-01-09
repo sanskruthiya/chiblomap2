@@ -2,7 +2,7 @@
 
 東葛地域とつくばエクスプレス沿線を中心とした地域ブロガーの記事を地図上で表示するWebアプリケーションです。
 
-Live site: https://kashiwa.co-place.com/chiblo/
+サイトURL: https://kashiwa.co-place.com/chiblo/
 
 ## このマップについて
 
