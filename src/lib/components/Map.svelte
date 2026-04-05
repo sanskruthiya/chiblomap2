@@ -822,6 +822,17 @@
 		showLocationSearch = !showLocationSearch;
 	}
 
+	// URLのstationパラメータを更新する関数
+	function updateStationParam(stationId: string) {
+		const url = new URL(window.location.href);
+		if (stationId) {
+			url.searchParams.set('station', stationId);
+		} else {
+			url.searchParams.delete('station');
+		}
+		window.history.replaceState({}, '', url.toString());
+	}
+
 	// 駅を選択して移動する関数
 	function selectStation() {
 		if (!selectedStation) {
@@ -835,6 +846,9 @@
 				zoom: 15,
 				duration: 2000
 			});
+			
+			// URLパラメータを更新
+			updateStationParam(station.id);
 			
 			// 選択成功後にモーダルを閉じる
 			showLocationSearch = false;
@@ -901,12 +915,26 @@
 			// グローバル関数として登録
 			(window as any).navigatePopup = navigatePopup;
 
+			// URLクエリパラメータから初期表示駅を取得
+			const urlParams = new URLSearchParams(window.location.search);
+			const stationParam = urlParams.get('station');
+			let initCenter: [number, number] = INITIAL_COORDS;
+			let initZoom = INITIAL_ZOOM;
+
+			if (stationParam) {
+				const matchedStation = stationOptions.find(s => s.id === stationParam);
+				if (matchedStation && matchedStation.lat && matchedStation.lng) {
+					initCenter = [matchedStation.lng, matchedStation.lat];
+					initZoom = 14;
+				}
+			}
+
 			// MapLibre GL JSマップの初期化
 			map = new maplibregl.Map({
 			container: mapContainer,
 			style: `${base}/data/basemap_style.json`,
-			center: INITIAL_COORDS,
-			zoom: INITIAL_ZOOM,
+			center: initCenter,
+			zoom: initZoom,
 			bearing: INITIAL_BEARING,
 			pitch: INITIAL_PITCH,
 			maxZoom: 18,
