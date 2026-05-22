@@ -1,14 +1,14 @@
 {
-  "lastDataUpdate": "2025年12月29日",
-  "dataCount": 2618,
+  "lastDataUpdate": "2026年5月14日",
+  "dataCount": 2703,
   "announcements": [
     {
-      "date": "2025-12-29",
-      "message": "UIを刷新し、モダンなデザインに変更しました。"
+      "date": "2026-05-14",
+      "message": "記事情報を追加しました。（掲載数：2703件）"
     },
     {
       "date": "2025-12-29",
-      "message": "記事情報を追加しました。（掲載数：2618件）"
+      "message": "UIを刷新し、モダンなデザインに変更しました。"
     }
   ],
   "githubUrl": "https://github.com/sanskruthiya/chiblomap2"
