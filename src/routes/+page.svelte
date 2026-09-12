@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import Map from '$lib/components/Map.svelte';
 	import LoadingScreen from '$lib/components/LoadingScreen.svelte';
 
@@ -27,15 +26,10 @@
 
 <main class="h-screen w-full relative">
 	{#if isLoading}
-		<LoadingScreen 
-			{loadedCount} 
-			{totalCount} 
-			{isLoading}
-			on:ready={handleLoadingReady}
-		/>
+		<LoadingScreen {loadedCount} {totalCount} {isLoading} on:ready={handleLoadingReady} />
 	{/if}
-	
-	<Map 
+
+	<Map
 		bind:this={mapComponent}
 		on:loadingProgress={handleLoadingProgress}
 		showInitially={!isLoading}

@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { createEventDispatcher } from 'svelte';
 	import { base } from '$app/paths';
+	import type { SiteInfo } from '$lib/types/poi';
 
 	const dispatch = createEventDispatcher();
 
@@ -9,7 +10,7 @@
 	export let totalCount = 0;
 	export let isLoading = true;
 
-	let siteInfo: any = null;
+	let siteInfo: SiteInfo | null = null;
 	let progress = 0;
 
 	$: progress = totalCount > 0 ? Math.round((loadedCount / totalCount) * 100) : 0;
@@ -113,8 +114,13 @@
 	}
 
 	@keyframes float {
-		0%, 100% { transform: translateY(0px); }
-		50% { transform: translateY(-10px); }
+		0%,
+		100% {
+			transform: translateY(0px);
+		}
+		50% {
+			transform: translateY(-10px);
+		}
 	}
 
 	.title {
@@ -165,7 +171,8 @@
 		backdrop-filter: blur(10px);
 	}
 
-	.update-info, .data-count {
+	.update-info,
+	.data-count {
 		margin: 0.25rem 0;
 		font-size: 0.9rem;
 	}
@@ -185,7 +192,11 @@
 	}
 
 	@keyframes spin {
-		0% { transform: rotate(0deg); }
-		100% { transform: rotate(360deg); }
+		0% {
+			transform: rotate(0deg);
+		}
+		100% {
+			transform: rotate(360deg);
+		}
 	}
 </style>
