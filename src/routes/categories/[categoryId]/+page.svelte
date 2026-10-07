@@ -1,13 +1,28 @@
 <script lang="ts">
 	import { base } from '$app/paths';
 	import { categoryOptions } from '$lib/data/categories';
+	import { stationOptions } from '$lib/data/stations';
 	import type { PageData } from './$types';
 
 	export let data: PageData;
 
+	const STATION_RADIUS_M = 2000;
+
 	$: category = data.category;
 	$: pois = data.pois.slice(0, 100);
 	$: totalCount = data.totalCount;
+
+	let selectedStationId = '';
+
+	const stations = stationOptions.filter((s) => s.lat != null && s.lng != null);
+
+	$: filteredPOIs = selectedStationId
+		? pois
+				.filter((poi) => (poi.distances[selectedStationId] ?? Infinity) <= STATION_RADIUS_M)
+				.sort((a, b) => a.distances[selectedStationId] - b.distances[selectedStationId])
+		: pois;
+
+	$: displayCount = selectedStationId ? filteredPOIs.length : totalCount;
 
 	function officialLinkLabel(flag: string) {
 		const labels: Record<string, string> = {
@@ -46,11 +61,26 @@
 			<p class="mt-2 text-slate-600">
 				柏市・流山市・松戸市・野田市・我孫子市・守谷市などの{category.label}を紹介する地域ブログ記事を集めました。
 			</p>
-			<div class="mt-4">
+			<div class="mt-4 flex flex-wrap items-center gap-3">
 				<span class="rounded-full bg-sky-100 px-3 py-1 text-sm font-medium text-sky-700">
-					該当スポット: {totalCount}件
+					該当スポット: {displayCount}件
 				</span>
+				<label class="flex items-center gap-2 text-sm text-slate-600">
+					<span>駅から絞り込み（2km圏内）:</span>
+					<select
+						bind:value={selectedStationId}
+						class="rounded-md border border-slate-300 bg-white px-2 py-1 text-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+					>
+						<option value="">すべての駅</option>
+						{#each stations as station (station.id)}
+							<option value={station.id}>{station.name}</option>
+						{/each}
+					</select>
+				</label>
 			</div>
+			<p class="mt-2 text-xs text-slate-500">
+				※駅からの距離は直線距離（概算）です。
+			</p>
 		</header>
 
 		<nav aria-label="カテゴリを切り替える" class="mb-8">
@@ -78,9 +108,9 @@
 			</div>
 		</nav>
 
-		{#if pois.length > 0}
+		{#if filteredPOIs.length > 0}
 			<ul class="space-y-3">
-				{#each pois as poi (poi.properties.fid)}
+				{#each filteredPOIs as poi (poi.properties.fid)}
 					<li
 						class="rounded-xl border border-slate-100 bg-white p-4 shadow-sm transition hover:shadow-md"
 					>
@@ -95,6 +125,11 @@
 								<div>
 									<h2 class="text-lg font-semibold text-slate-800 hover:text-sky-600">
 										{poi.properties.name_poi}
+										{#if selectedStationId && poi.distances[selectedStationId] != null}
+											<span class="ml-2 text-xs font-normal text-slate-500">
+												（{Math.round(poi.distances[selectedStationId])}m）
+											</span>
+										{/if}
 									</h2>
 									<p class="mt-1 text-sm text-slate-500">
 										{poi.properties.blog_source}
@@ -163,7 +198,11 @@
 				{/each}
 			</ul>
 
-			{#if totalCount > 100}
+			{#if selectedStationId && filteredPOIs.length === 0}
+				<p class="mt-4 rounded-xl bg-slate-50 p-6 text-center text-sm text-slate-600">
+					選択した駅の2km圏内に該当するスポットは見つかりませんでした。
+				</p>
+			{:else if totalCount > 100}
 				<p class="mt-6 text-center text-sm text-slate-500">
 					表示は最新・代表100件です。残り{totalCount - 100}件は地図からご覧ください。
 				</p>
