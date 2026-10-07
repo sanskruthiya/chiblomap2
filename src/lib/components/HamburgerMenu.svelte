@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { createEventDispatcher } from 'svelte';
+	import { base } from '$app/paths';
 
 	const dispatch = createEventDispatcher<{ toggle: void; menuAction: string }>();
 
@@ -66,6 +67,23 @@
 				</svg>
 				フィルター絞り込み
 			</button>
+			<!-- eslint-disable svelte/no-navigation-without-resolve -->
+			<a class="menu-item" href={`${base}/categories/`}>
+				<!-- eslint-enable svelte/no-navigation-without-resolve -->
+				<svg
+					class="menu-icon"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+				>
+					<rect x="3" y="3" width="7" height="7" rx="1"></rect>
+					<rect x="14" y="3" width="7" height="7" rx="1"></rect>
+					<rect x="3" y="14" width="7" height="7" rx="1"></rect>
+					<rect x="14" y="14" width="7" height="7" rx="1"></rect>
+				</svg>
+				カテゴリ別まとめを見る
+			</a>
 		</div>
 	{/if}
 </div>
@@ -166,6 +184,7 @@
 			'游ゴシック体', YuGothic, sans-serif;
 		font-weight: 500;
 		color: #2c3e50;
+		text-decoration: none;
 		letter-spacing: 0.3px;
 		transition: all 0.3s ease;
 	}

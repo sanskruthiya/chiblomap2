@@ -24,12 +24,27 @@
 		}
 	});
 
+	let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+
 	// 一定の進捗でマップを表示
 	$: if (progress >= 30 && isLoading) {
 		setTimeout(() => {
 			dispatch('ready');
 		}, 1000);
 	}
+
+	onMount(() => {
+		// 万が一進捗イベントが届かなくても、最大15秒後にはマップを表示する
+		fallbackTimer = setTimeout(() => {
+			if (isLoading) {
+				dispatch('ready');
+			}
+		}, 15000);
+
+		return () => {
+			if (fallbackTimer) clearTimeout(fallbackTimer);
+		};
+	});
 </script>
 
 <div class="loading-screen">

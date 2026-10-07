@@ -10,6 +10,7 @@
 	import FilterModal from '$lib/components/FilterModal.svelte';
 	import { stationOptions } from '$lib/data/stations';
 	import { categoryOptions } from '$lib/data/categories';
+	import { loadMapState, saveMapState } from '$lib/data/mapState';
 	import { periodOptions } from '$lib/data/periods';
 	import type { POIFeature, SiteInfo } from '$lib/types/poi';
 	import 'maplibre-gl/dist/maplibre-gl.css';
@@ -35,6 +36,7 @@
 	let selectedStation = ''; // 選択された駅
 	let selectedPeriod = 0; // 0: 全期間, 1: 1ヶ月, 2: 3ヶ月, 3: 6ヶ月, 4: 1年
 	let selectedCategories: string[] = []; // 選択されたカテゴリのリスト
+	let initialCategoryFilterApplied = false; // カテゴリURLパラメータからの初期フィルター適用済みフラグ
 	let sortMode = 'name-asc'; // ソートモード: 'name-asc'(デフォルト), 'date-desc'
 	let totalPOICount = 0; // 実際のPOI総数（リアクティブ変数）
 	let currentVisiblePOIs = 0; // 現在表示されているPOI数（フィルター適用後）
@@ -48,6 +50,21 @@
 	const INITIAL_BEARING = 0;
 	const INITIAL_PITCH = 0;
 
+	function saveCurrentMapState() {
+		if (!map) return;
+		const center = map.getCenter();
+		saveMapState({
+			center: [center.lng, center.lat],
+			zoom: map.getZoom(),
+			filterKeyword,
+			selectedPeriod,
+			selectedCategories,
+			showPOIList,
+			isListExpanded,
+			sortMode
+		});
+	}
+
 	// POIデータを格納するオブジェクト
 	const poiData: GeoJSON.FeatureCollection<GeoJSON.Point, Record<string, unknown>> = {
 		type: 'FeatureCollection',
@@ -57,7 +74,7 @@
 	// サイト情報の読み込み
 	async function loadSiteInfo() {
 		try {
-			const response = await fetch(`${base}/data/site-info.json`);
+			const response = await fetch(`${base}/data/site-info.json`, { cache: 'no-store' });
 			if (!response.ok) throw new Error('サイト情報の取得に失敗しました');
 			siteInfo = (await response.json()) as SiteInfo;
 			return siteInfo;
@@ -75,13 +92,15 @@
 	}
 
 	// FlatGeoBufデータの読み込み
-	async function loadPOIData(lastDataUpdate?: string) {
+	async function loadPOIData(lastDataUpdate?: string, dataCount?: number) {
 		try {
-			// lastDataUpdateをキャッシュパラメータとして使用
+			// lastDataUpdateとdataCountをキャッシュパラメータとして使用
 			let cacheParam = 'default';
 			if (lastDataUpdate) {
-				// 日本語の日付を英数字のみのパラメータに変換
-				cacheParam = lastDataUpdate.replace(/[年月日]/g, '').replace(/\s/g, '');
+				// 日本語の日付を英数字のみのパラメータに変換し、件数を付加して同日更新にも対応
+				cacheParam =
+					lastDataUpdate.replace(/[年月日]/g, '').replace(/\s/g, '') +
+					(dataCount ? `-${dataCount}` : '');
 			}
 			const url = `${base}/data/poi.fgb?v=${cacheParam}`;
 
@@ -137,6 +156,14 @@
 			isDataLoaded = true;
 			currentVisiblePOIs = poiData.features.length; // 初期状態では全POIが表示
 			console.log(`Loaded ${poiData.features.length} POI features`);
+
+			// featuresCountが取得できなかった場合も完了を通知
+			if (totalFeatures === 0 && poiData.features.length > 0) {
+				dispatch('loadingProgress', {
+					loadedCount: poiData.features.length,
+					totalCount: poiData.features.length
+				});
+			}
 		} catch (error) {
 			console.error('POIデータの読み込みに失敗しました:', error);
 
@@ -351,6 +378,7 @@
 	function changeSortMode(mode: string) {
 		sortMode = mode;
 		updateCenterPOIs(); // リストを再更新
+		saveCurrentMapState();
 	}
 
 	// マップ中央付近のPOIを取得する関数（旧バージョン準拠）
@@ -412,6 +440,7 @@
 
 		// POIリストも更新
 		updateCenterPOIs();
+		saveCurrentMapState();
 	}
 
 	// 検索ワード + 期間 + カテゴリの複合フィルター
@@ -528,6 +557,7 @@
 			// 現在表示されているPOI数を全件に戻す
 			currentVisiblePOIs = poiData.features.length;
 		}
+		saveCurrentMapState();
 	}
 
 	// 現在地を取得
@@ -649,14 +679,42 @@
 			// URLクエリパラメータから初期表示駅を取得
 			const urlParams = new URLSearchParams(window.location.search);
 			const stationParam = urlParams.get('station');
-			let initCenter: [number, number] = INITIAL_COORDS;
-			let initZoom = INITIAL_ZOOM;
+			const savedState = loadMapState();
+			let initCenter: [number, number] = savedState?.center ?? INITIAL_COORDS;
+			let initZoom = savedState?.zoom ?? INITIAL_ZOOM;
+
+			if (savedState) {
+				filterKeyword = savedState.filterKeyword;
+				selectedPeriod = savedState.selectedPeriod;
+				selectedCategories = savedState.selectedCategories.filter((id) =>
+					categoryOptions.some((category) => category.id === id)
+				);
+				showPOIList = savedState.showPOIList;
+				isListExpanded = savedState.isListExpanded;
+				sortMode = savedState.sortMode;
+			}
 
 			if (stationParam) {
 				const matchedStation = stationOptions.find((s) => s.id === stationParam);
 				if (matchedStation && matchedStation.lat && matchedStation.lng) {
 					initCenter = [matchedStation.lng, matchedStation.lat];
 					initZoom = 14;
+				}
+			}
+
+			// 記事カード等からの座標指定を最優先で適用
+			const latParam = urlParams.get('lat');
+			const lngParam = urlParams.get('lng');
+			const zoomParam = urlParams.get('zoom');
+			if (latParam !== null && lngParam !== null) {
+				const lat = Number(latParam);
+				const lng = Number(lngParam);
+				const zoom = zoomParam === null ? NaN : Number(zoomParam);
+				if (Number.isFinite(lat) && Number.isFinite(lng)) {
+					initCenter = [lng, lat];
+					if (Number.isFinite(zoom)) {
+						initZoom = Math.min(Math.max(zoom, 8), 18);
+					}
 				}
 			}
 
@@ -675,6 +733,10 @@
 			// マップの読み込み完了時の処理
 			map.on('load', () => {
 				console.log('Map loaded successfully');
+
+				// basemap_style.json の center/zoom がコンストラクタ指定を上書きするため、
+				// スタイル適用後に初期表示位置を設定し直す
+				map.jumpTo({ center: initCenter, zoom: initZoom });
 
 				// POIデータソースを追加
 				map.addSource('poi-data', {
@@ -771,12 +833,23 @@
 				});
 
 				// データ読み込み開始（サイト情報のlastDataUpdateを使用）
-				loadPOIData(siteData?.lastDataUpdate);
+				loadPOIData(siteData?.lastDataUpdate, siteData?.dataCount);
 
 				// データ読み込み完了時にPOIリストを初期表示
 				map.on('sourcedata', (e) => {
 					if (e.sourceId === 'poi-data' && e.isSourceLoaded && isDataLoaded) {
 						updateCenterPOIs();
+
+						// URLパラメータからのカテゴリー初期フィルターを適用
+						if (
+							!initialCategoryFilterApplied &&
+							(filterKeyword.trim().length > 0 ||
+								selectedPeriod > 0 ||
+								selectedCategories.length > 0)
+						) {
+							applyFilter();
+							initialCategoryFilterApplied = true;
+						}
 					}
 				});
 
@@ -843,17 +916,21 @@
 					if (showPOIList) {
 						updateCenterPOIs();
 					}
+					saveCurrentMapState();
 				});
 
 				// 初期POIリスト表示
 				if (isDataLoaded) {
 					updateCenterPOIs();
 				}
+
+				saveCurrentMapState();
 			});
 		});
 
 		// クリーンアップ関数
 		return () => {
+			saveCurrentMapState();
 			map?.remove();
 		};
 	});
